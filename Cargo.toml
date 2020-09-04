@@ -1,0 +1,26 @@
+[package]
+name = "musicbot2"
+version = "0.1.0"
+authors = ["MOZGIII <mike-n@narod.ru>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+reqwest = { version = "0.10", features = ["json"] }
+serde_json = "1"
+tokio = { version = "0.2", features = ["macros", "rt-threaded"] }
+tracing = "0.1"
+tracing-subscriber = "0.2"
+twilight-gateway = "0.1"
+twilight-http = "0.1"
+twilight-lavalink = "0.1"
+twilight-model = "0.1"
+twilight-standby = "0.1"
+
+[patch.crates-io]
+twilight-gateway = { git = "https://github.com/twilight-rs/twilight", branch = "trunk" }
+twilight-http = { git = "https://github.com/twilight-rs/twilight", branch = "trunk" }
+twilight-lavalink = { git = "https://github.com/twilight-rs/twilight", branch = "trunk" }
+twilight-model = { git = "https://github.com/twilight-rs/twilight", branch = "trunk" }
+twilight-standby = { git = "https://github.com/twilight-rs/twilight", branch = "trunk" }
