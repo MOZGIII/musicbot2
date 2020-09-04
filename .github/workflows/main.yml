@@ -1,0 +1,68 @@
+name: main
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Cache cargo
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-stable-cargo-
+      - name: Cache target
+        uses: actions/cache@v2
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-stable-target-
+      - name: Install rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          components: rustfmt, clippy
+          default: true
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --workspace
+
+  docker:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: test
+    env:
+      IMAGE_NAME: ghcr.io/mozgiii/musicbot2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build docker image
+        run: docker build . -t "$IMAGE_NAME"
+      - name: Log into GitHub Container Registry
+        run: echo "${{ secrets.CR_PAT }}" | docker login https://ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push image to GitHub Container Registry
+        run: |
+          set -eux
+
+          # Strip git ref prefix from version
+          VERSION="$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')"
+
+          # Strip "v" prefix from tag name
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION="$(echo "$VERSION" | sed -e 's/^v//')"
+
+          # Use Docker `latest` tag convention
+          [ "$VERSION" == "master" ] && VERSION=latest
+
+          docker tag "$IMAGE_NAME" "$IMAGE_NAME:$VERSION"
+          docker push "$IMAGE_NAME:$VERSION"
