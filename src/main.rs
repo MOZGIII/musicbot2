@@ -2,6 +2,7 @@ use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
 use std::{convert::TryInto, env, error::Error, future::Future, net::ToSocketAddrs};
+use tracing::{debug, info};
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::{
@@ -26,7 +27,7 @@ fn spawn(
 ) {
     tokio::spawn(async move {
         if let Err(why) = fut.await {
-            tracing::debug!("handler error: {:?}", why);
+            debug!("handler error: {:?}", why);
         }
     });
 }
@@ -69,6 +70,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     let mut events = state.shard.events();
 
+    info!(message = "processing events");
+
     while let Some(event) = events.next().await {
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
@@ -95,6 +98,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 }
 
 async fn join(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    debug!(
+        message = "handling command",
+        command = "join",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
+    );
+
     state
         .http
         .create_message(msg.channel_id)
@@ -133,10 +143,11 @@ async fn join(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + S
 }
 
 async fn leave(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "leave command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "leave",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
 
     let guild_id = msg.guild_id.unwrap();
@@ -165,11 +176,13 @@ async fn leave(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + 
 }
 
 async fn play(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "play command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "play",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
+
     state
         .http
         .create_message(msg.channel_id)
@@ -219,10 +232,11 @@ async fn play(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + S
 }
 
 async fn pause(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "pause command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "pause",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
 
     let guild_id = msg.guild_id.unwrap();
@@ -242,11 +256,13 @@ async fn pause(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + 
 }
 
 async fn seek(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "seek command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "seek",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
+
     state
         .http
         .create_message(msg.channel_id)
@@ -276,10 +292,11 @@ async fn seek(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + S
 }
 
 async fn stop(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "stop command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "stop",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
 
     let guild_id = msg.guild_id.unwrap();
@@ -296,11 +313,13 @@ async fn stop(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + S
 }
 
 async fn volume(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing::debug!(
-        "volume command in channel {} by {}",
-        msg.channel_id,
-        msg.author.name
+    debug!(
+        message = "handling command",
+        command = "volume",
+        channel = %msg.channel_id,
+        author = %msg.author.name,
     );
+
     state
         .http
         .create_message(msg.channel_id)
