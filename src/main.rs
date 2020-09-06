@@ -1,7 +1,7 @@
 use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
-use std::{convert::TryInto, env, error::Error, future::Future, net::SocketAddr, str::FromStr};
+use std::{convert::TryInto, env, error::Error, future::Future, net::ToSocketAddrs};
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::{
@@ -39,9 +39,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let state = {
         let token =
             env::var("DISCORD_TOKEN").with_context(|| "unable to obtain DISCORD_TOKEN env var")?;
-        let lavalink_host = SocketAddr::from_str(
-            &env::var("LAVALINK_HOST").with_context(|| "unable to obtain LAVALINK_HOST env var")?,
-        )?;
+        let lavalink_host = env::var("LAVALINK_HOST")
+            .with_context(|| "unable to obtain LAVALINK_HOST env var")?
+            .to_socket_addrs()
+            .with_context(|| "unable to parse lavalink host")?
+            .next()
+            .with_context(|| "unable to resolve lavalink host")?;
         let lavalink_auth = env::var("LAVALINK_AUTHORIZATION")
             .with_context(|| "unable to obtain LAVALINK_AUTHORIZATION env var")?;
         let shard_count = 1u64;
