@@ -2,16 +2,23 @@ use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
 use std::{convert::TryInto, env, future::Future, net::ToSocketAddrs, sync::Arc};
+use thiserror::Error;
 use tracing::{debug, info};
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::{
-    http::LoadedTracks,
-    model::{Destroy, Pause, Play, Seek, Stop, Volume},
+    http::{LoadedTracks, Track},
+    model::{Destroy, Pause, Play, Seek, Volume},
     Lavalink,
 };
-use twilight_model::{channel::Message, gateway::payload::MessageCreate, id::ChannelId};
+use twilight_model::{
+    channel::Message,
+    gateway::payload::MessageCreate,
+    id::{ChannelId, GuildId, UserId},
+};
 use twilight_standby::Standby;
+
+mod voice_channel;
 
 #[derive(Clone, Debug)]
 struct State {
@@ -70,20 +77,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
         if let Event::MessageCreate(msg) = event {
             if msg.guild_id.is_none() || !msg.content.starts_with('!') {
-                continue;
+                return Ok(());
             }
-
-            let state = Arc::clone(&state);
-            match msg.content.splitn(2, ' ').next() {
-                Some("!join") => spawn(async move { state.join(msg.0).await }),
-                Some("!leave") => spawn(async move { state.leave(msg.0).await }),
-                Some("!pause") => spawn(async move { state.pause(msg.0).await }),
-                Some("!play") => spawn(async move { state.play(msg.0).await }),
-                Some("!seek") => spawn(async move { state.seek(msg.0).await }),
-                Some("!stop") => spawn(async move { state.stop(msg.0).await }),
-                Some("!volume") => spawn(async move { state.volume(msg.0).await }),
-                _ => continue,
-            }
+            state.process_message(msg).await?;
         }
     }
 
@@ -102,249 +98,265 @@ where
 }
 
 impl State {
-    async fn join(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "join",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
+    async fn process_message(
+        self: &Arc<Self>,
+        msg: Box<MessageCreate>,
+    ) -> Result<(), anyhow::Error> {
+        let msg: Message = msg.0;
 
-        self.http
-            .create_message(msg.channel_id)
-            .content("What's the channel ID you want me to join?")?
-            .await?;
+        let guild_id = if let Some(val) = msg.guild_id {
+            val
+        } else {
+            return Ok(());
+        };
 
-        let author_id = msg.author.id;
-        let msg = self
-            .standby
-            .wait_for_message(msg.channel_id, move |new_msg: &MessageCreate| {
-                new_msg.author.id == author_id
-            })
-            .await?;
-        let channel_id = msg.content.parse::<u64>()?;
+        let content = msg.content.to_owned();
+        let args: Vec<String> = content.split(' ').map(ToOwned::to_owned).collect();
+        let mut args = args.into_iter();
 
-        self.shard
-            .command(&serde_json::json!({
-                "op": 4,
-                "d": {
-                    "channel_id": channel_id,
-                    "guild_id": msg.guild_id,
-                    "self_mute": false,
-                    "self_deaf": false,
+        let command = match args.next() {
+            Some(val) => val,
+            None => return Ok(()),
+        };
+
+        let state = Arc::clone(&self);
+        match command.as_ref() {
+            "!play" => spawn(async move {
+                let identifier = match args.next() {
+                    Some(val) => val,
+                    None => {
+                        state
+                            .respond_to(msg.channel_id, "Pass track as an argument")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let channel_id = match state.user_voice_channel(guild_id, msg.author.id).await? {
+                    Some(val) => val,
+                    None => {
+                        state
+                            .respond_to(msg.channel_id, "You need to join a voice channel first")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                match state.action_play(guild_id, channel_id, identifier).await {
+                    Ok(track) => {
+                        state
+                            .respond_to(
+                                msg.channel_id,
+                                format!(
+                                    "Playing **{:?}** by **{:?}**",
+                                    track.info.title, track.info.author
+                                ),
+                            )
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) if err.is::<NoTracksFound>() => {
+                        state.respond_to(msg.channel_id, "No tracks found").await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
                 }
-            }))
-            .await?;
-
-        self.http
-            .create_message(msg.channel_id)
-            .content(format!("Joined <#{}>!", channel_id))?
-            .await?;
+            }),
+            "!stop" => spawn(async move { state.action_stop(guild_id).await }),
+            "!volume" => spawn(async move {
+                let value = match args.next() {
+                    Some(val) => val,
+                    None => {
+                        state
+                            .respond_to(msg.channel_id, "Pass volume value as an argument")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let value = match value.parse() {
+                    Ok(value) => value,
+                    Err(err) => {
+                        state
+                            .respond_to(msg.channel_id, format!("Volume value is invalid: {}", err))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                match state.action_volume(guild_id, value).await {
+                    Ok(val) => {
+                        state
+                            .respond_to(msg.channel_id, format!("Volume was set to {}", val))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) if err.is::<VolumeValueOutOfBounds>() => {
+                        state
+                            .respond_to(msg.channel_id, format!("Invalid volume value: {}", err))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
+                }
+            }),
+            "!seek" => spawn(async move {
+                let value = match args.next() {
+                    Some(val) => val,
+                    None => {
+                        state
+                            .respond_to(
+                                msg.channel_id,
+                                "Pass seek position in milliseconds as an argument",
+                            )
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let value = match value.parse() {
+                    Ok(value) => value,
+                    Err(err) => {
+                        state
+                            .respond_to(msg.channel_id, format!("Position is invalid: {}", err))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                match state.action_seek(guild_id, value).await {
+                    Ok(val) => {
+                        state
+                            .respond_to(msg.channel_id, format!("Position was set to {}ms", val))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
+                }
+            }),
+            "!pause" => spawn(async move {
+                match state.action_pause_toggle(guild_id).await {
+                    Ok(val) => {
+                        state
+                            .respond_to(msg.channel_id, if val { "Paused" } else { "Unpaused" })
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
+                }
+            }),
+            _ => {}
+        }
 
         Ok(())
     }
 
-    async fn leave(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "leave",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
+    async fn user_voice_channel(
+        &self,
+        guild_id: GuildId,
+        user_id: UserId,
+    ) -> Result<Option<ChannelId>, anyhow::Error> {
+        let guild = self
+            .http
+            .guild(guild_id)
+            .await?
+            .with_context(|| "no guild")?;
+        Ok(guild
+            .voice_states
+            .get(&user_id)
+            .and_then(|voice_state| voice_state.channel_id))
+    }
 
-        let guild_id = msg.guild_id.unwrap();
-        let player = self.lavalink.player(guild_id).await.unwrap();
-        player.send(Destroy::from(guild_id))?;
-        self.shard
-            .command(&serde_json::json!({
-                "op": 4,
-                "d": {
-                    "channel_id": None::<ChannelId>,
-                    "guild_id": msg.guild_id,
-                    "self_mute": false,
-                    "self_deaf": false,
-                }
-            }))
-            .await?;
-
-        self.http
-            .create_message(msg.channel_id)
-            .content("Left the channel")?
-            .await?;
-
+    async fn respond_to(
+        &self,
+        to: ChannelId,
+        with: impl Into<String>,
+    ) -> Result<(), anyhow::Error> {
+        self.http.create_message(to).content(with)?.await?;
         Ok(())
     }
 
-    async fn play(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "play",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
+    async fn action_play(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        identifier: impl AsRef<str>,
+    ) -> Result<Track, anyhow::Error> {
+        // Join channel.
+        voice_channel::join(&self.shard, guild_id, channel_id).await?;
 
-        self.http
-            .create_message(msg.channel_id)
-            .content("What's the URL of the audio to play?")?
-            .await?;
+        // Select player.
+        let player = self.lavalink.player(guild_id).await?;
+        let node_config = player.node().config();
 
-        let author_id = msg.author.id;
-        let msg = self
-            .standby
-            .wait_for_message(msg.channel_id, move |new_msg: &MessageCreate| {
-                new_msg.author.id == author_id
-            })
-            .await?;
-        let guild_id = msg.guild_id.unwrap();
-
-        let player = self.lavalink.player(guild_id).await.unwrap();
+        // Load tracks.
         let req = twilight_lavalink::http::load_track(
-            player.node().config().address,
-            &msg.content,
-            &player.node().config().authorization,
+            node_config.address,
+            identifier,
+            &node_config.authorization,
         )?
         .try_into()?;
         let res = self.reqwest.execute(req).await?;
         let loaded = res.json::<LoadedTracks>().await?;
 
-        if let Some(track) = loaded.tracks.first() {
-            player.send(Play::from((guild_id, &track.track)))?;
+        // Determine the track.
+        let mut tracks = loaded.tracks.into_iter();
+        let track = tracks.next().ok_or_else(|| NoTracksFound)?;
 
-            let content = format!(
-                "Playing **{:?}** by **{:?}**",
-                track.info.title, track.info.author
-            );
-            self.http
-                .create_message(msg.channel_id)
-                .content(content)?
-                .await?;
-        } else {
-            self.http
-                .create_message(msg.channel_id)
-                .content("Didn't find any results")?
-                .await?;
+        // Issue play command.
+        player.send(Play::from((guild_id, &track.track)))?;
+
+        // Report success.
+        Ok(track)
+    }
+
+    async fn action_stop(&self, guild_id: GuildId) -> Result<(), anyhow::Error> {
+        // Issue stop command.
+        let player = self.lavalink.player(guild_id).await?;
+        player.send(Destroy::from(guild_id))?;
+
+        // Leave the voice channel.
+        voice_channel::leave(&self.shard, guild_id).await?;
+
+        // Report success.
+        Ok(())
+    }
+
+    async fn action_volume(&self, guild_id: GuildId, volume: i64) -> Result<i64, anyhow::Error> {
+        // Validate input bounds.
+        if 0 < volume || volume > 1000 {
+            return Err(VolumeValueOutOfBounds(volume).into());
         }
 
-        Ok(())
-    }
-
-    async fn pause(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "pause",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
-
-        let guild_id = msg.guild_id.unwrap();
-        let player = self.lavalink.player(guild_id).await.unwrap();
-        let paused = player.paused();
-        player.send(Pause::from((guild_id, !paused)))?;
-
-        let action = if paused { "Unpaused " } else { "Paused" };
-
-        self.http
-            .create_message(msg.channel_id)
-            .content(format!("{} the track", action))?
-            .await?;
-
-        Ok(())
-    }
-
-    async fn seek(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "seek",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
-
-        self.http
-            .create_message(msg.channel_id)
-            .content("Where in the track do you want to seek to (in seconds)?")?
-            .await?;
-
-        let author_id = msg.author.id;
-        let msg = self
-            .standby
-            .wait_for_message(msg.channel_id, move |new_msg: &MessageCreate| {
-                new_msg.author.id == author_id
-            })
-            .await?;
-        let guild_id = msg.guild_id.unwrap();
-        let position = msg.content.parse::<i64>()?;
-
-        let player = self.lavalink.player(guild_id).await.unwrap();
-        player.send(Seek::from((guild_id, position * 1000)))?;
-
-        self.http
-            .create_message(msg.channel_id)
-            .content(format!("Seeked to {}s", position))?
-            .await?;
-
-        Ok(())
-    }
-
-    async fn stop(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "stop",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
-
-        let guild_id = msg.guild_id.unwrap();
-        let player = self.lavalink.player(guild_id).await.unwrap();
-        player.send(Stop::from(guild_id))?;
-
-        self.http
-            .create_message(msg.channel_id)
-            .content("Stopped the track")?
-            .await?;
-
-        Ok(())
-    }
-
-    async fn volume(&self, msg: Message) -> Result<(), anyhow::Error> {
-        debug!(
-            message = "handling command",
-            command = "volume",
-            channel = %msg.channel_id,
-            author = %msg.author.name,
-        );
-
-        self.http
-            .create_message(msg.channel_id)
-            .content("What's the volume you want to set (0-1000, 100 being the default)?")?
-            .await?;
-
-        let author_id = msg.author.id;
-        let msg = self
-            .standby
-            .wait_for_message(msg.channel_id, move |new_msg: &MessageCreate| {
-                new_msg.author.id == author_id
-            })
-            .await?;
-        let guild_id = msg.guild_id.unwrap();
-        let volume = msg.content.parse::<i64>()?;
-
-        if volume > 1000 || volume < 0 {
-            self.http
-                .create_message(msg.channel_id)
-                .content("That's more than 1000")?
-                .await?;
-
-            return Ok(());
-        }
-
-        let player = self.lavalink.player(guild_id).await.unwrap();
+        // Issue volume command.
+        let player = self.lavalink.player(guild_id).await?;
         player.send(Volume::from((guild_id, volume)))?;
 
-        self.http
-            .create_message(msg.channel_id)
-            .content(format!("Set the volume to {}", volume))?
-            .await?;
+        // Report success.
+        Ok(volume)
+    }
 
-        Ok(())
+    async fn action_seek(
+        &self,
+        guild_id: GuildId,
+        position_in_millis: i64,
+    ) -> Result<i64, anyhow::Error> {
+        // Issue seek command.
+        let player = self.lavalink.player(guild_id).await?;
+        player.send(Seek::from((guild_id, position_in_millis)))?;
+
+        // Report success.
+        Ok(position_in_millis)
+    }
+
+    async fn action_pause_toggle(&self, guild_id: GuildId) -> Result<bool, anyhow::Error> {
+        // Prepare and issue pause toggle command.
+        let player = self.lavalink.player(guild_id).await?;
+        let was_paused = player.paused();
+        let should_be_paused = !was_paused;
+        player.send(Pause::from((guild_id, should_be_paused)))?;
+        Ok(should_be_paused)
     }
 }
+
+#[derive(Debug, Error)]
+#[error("no tracks found")]
+struct NoTracksFound;
+
+#[derive(Debug, Error)]
+#[error("volume value is out of bounds: {0}")]
+struct VolumeValueOutOfBounds(i64);
