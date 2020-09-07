@@ -76,9 +76,6 @@ async fn main() -> Result<(), anyhow::Error> {
         state.lavalink.process(&event).await?;
 
         if let Event::MessageCreate(msg) = event {
-            if msg.guild_id.is_none() || !msg.content.starts_with('!') {
-                return Ok(());
-            }
             state.process_message(msg).await?;
         }
     }
