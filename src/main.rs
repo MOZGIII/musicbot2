@@ -1,35 +1,22 @@
 use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
-use std::{convert::TryInto, env, future::Future, net::ToSocketAddrs, sync::Arc};
-use thiserror::Error;
-use tracing::{debug, info};
+use std::{env, future::Future, net::ToSocketAddrs, sync::Arc};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
-use twilight_lavalink::{
-    http::{LoadedTracks, Track},
-    model::{Destroy, Pause, Play, Seek, Volume},
-    Lavalink,
-};
-use twilight_model::{
-    channel::Message,
-    gateway::payload::MessageCreate,
-    id::{ChannelId, GuildId, UserId},
-};
+use twilight_lavalink::Lavalink;
+use twilight_model::{channel::Message, gateway::payload::MessageCreate};
 use twilight_standby::Standby;
 
+mod action;
+mod helper;
+mod state;
 mod voice_channel;
 
-#[derive(Clone, Debug)]
-struct State {
-    http: HttpClient,
-    lavalink: Lavalink,
-    reqwest: ReqwestClient,
-    shard: Shard,
-    standby: Standby,
-    cache: InMemoryCache,
-}
+use helper::{respond_to, user_voice_channel};
+use state::State;
+use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -82,7 +69,7 @@ async fn main() -> Result<(), anyhow::Error> {
         state.cache.update(&event);
 
         if let Event::MessageCreate(msg) = event {
-            state.process_message(msg).await;
+            process_message(&state, msg).await;
         }
     }
 
@@ -100,283 +87,162 @@ where
     });
 }
 
-impl State {
-    async fn process_message(self: &Arc<Self>, msg: Box<MessageCreate>) {
-        let msg: Message = msg.0;
+async fn process_message(state: &Arc<State>, msg: Box<MessageCreate>) {
+    let msg: Message = msg.0;
 
-        let guild_id = match msg.guild_id {
-            Some(val) => val,
-            None => {
-                debug!(message = "skipping non-guild message", ?msg);
-                return;
-            }
-        };
-
-        let content = msg.content.to_owned();
-        let args: Vec<String> = content.split(' ').map(ToOwned::to_owned).collect();
-        let mut args = args.into_iter();
-
-        let command = match args.next() {
-            Some(val) => val,
-            None => {
-                debug!(message = "skipping message without a command", ?msg);
-                return;
-            }
-        };
-
-        let state = Arc::clone(&self);
-        match command.as_ref() {
-            "!play" => spawn(async move {
-                let identifier = match args.next() {
-                    Some(val) => val,
-                    None => {
-                        state
-                            .respond_to(msg.channel_id, "Pass track as an argument")
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                let channel_id = match state.user_voice_channel(guild_id, msg.author.id).await? {
-                    Some(val) => val,
-                    None => {
-                        state
-                            .respond_to(msg.channel_id, "You need to join a voice channel first")
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                match state.action_play(guild_id, channel_id, identifier).await {
-                    Ok(track) => {
-                        state
-                            .respond_to(
-                                msg.channel_id,
-                                format!(
-                                    "Playing **{:?}** by **{:?}**",
-                                    track.info.title, track.info.author
-                                ),
-                            )
-                            .await?;
-                        Ok(())
-                    }
-                    Err(err) if err.is::<NoTracksFound>() => {
-                        state.respond_to(msg.channel_id, "No tracks found").await?;
-                        Ok(())
-                    }
-                    Err(err) => Err(err)?,
-                }
-            }),
-            "!stop" => spawn(async move { state.action_stop(guild_id).await }),
-            "!volume" => spawn(async move {
-                let value = match args.next() {
-                    Some(val) => val,
-                    None => {
-                        state
-                            .respond_to(msg.channel_id, "Pass volume value as an argument")
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                let value = match value.parse() {
-                    Ok(value) => value,
-                    Err(err) => {
-                        state
-                            .respond_to(msg.channel_id, format!("Volume value is invalid: {}", err))
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                match state.action_volume(guild_id, value).await {
-                    Ok(val) => {
-                        state
-                            .respond_to(msg.channel_id, format!("Volume was set to {}", val))
-                            .await?;
-                        Ok(())
-                    }
-                    Err(err) if err.is::<VolumeValueOutOfBounds>() => {
-                        state
-                            .respond_to(msg.channel_id, format!("Invalid volume value: {}", err))
-                            .await?;
-                        Ok(())
-                    }
-                    Err(err) => Err(err)?,
-                }
-            }),
-            "!seek" => spawn(async move {
-                let value = match args.next() {
-                    Some(val) => val,
-                    None => {
-                        state
-                            .respond_to(
-                                msg.channel_id,
-                                "Pass seek position in milliseconds as an argument",
-                            )
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                let value = match value.parse() {
-                    Ok(value) => value,
-                    Err(err) => {
-                        state
-                            .respond_to(msg.channel_id, format!("Position is invalid: {}", err))
-                            .await?;
-                        return Ok(());
-                    }
-                };
-                match state.action_seek(guild_id, value).await {
-                    Ok(val) => {
-                        state
-                            .respond_to(msg.channel_id, format!("Position was set to {}ms", val))
-                            .await?;
-                        Ok(())
-                    }
-                    Err(err) => Err(err)?,
-                }
-            }),
-            "!pause" => spawn(async move {
-                match state.action_pause_toggle(guild_id).await {
-                    Ok(val) => {
-                        state
-                            .respond_to(msg.channel_id, if val { "Paused" } else { "Unpaused" })
-                            .await?;
-                        Ok(())
-                    }
-                    Err(err) => Err(err)?,
-                }
-            }),
-            _ => {}
+    let guild_id = match msg.guild_id {
+        Some(val) => val,
+        None => {
+            debug!(message = "skipping non-guild message", ?msg);
+            return;
         }
-    }
+    };
 
-    async fn user_voice_channel(
-        &self,
-        guild_id: GuildId,
-        user_id: UserId,
-    ) -> Result<Option<ChannelId>, anyhow::Error> {
-        let user_voice_state = self.cache.voice_state(user_id, guild_id);
-        let user_voice_state = match user_voice_state {
-            Some(val) => val,
-            None => {
-                debug!(message = "unable to find user voice state in cache");
-                return Ok(None);
-            }
-        };
+    let content = msg.content.to_owned();
+    let args: Vec<String> = content.split(' ').map(ToOwned::to_owned).collect();
+    let mut args = args.into_iter();
 
-        debug!(message = "got user voice state", ?user_voice_state);
-
-        let channel_id = user_voice_state.channel_id;
-        let channel_id = match channel_id {
-            Some(val) => val,
-            None => {
-                debug!(message = "unable to find channel id in user voice state");
-                return Ok(None);
-            }
-        };
-
-        debug!(
-            message = "got channel id from user voice state",
-            ?channel_id
-        );
-
-        Ok(Some(channel_id))
-    }
-
-    async fn respond_to(
-        &self,
-        to: ChannelId,
-        with: impl Into<String>,
-    ) -> Result<(), anyhow::Error> {
-        self.http.create_message(to).content(with)?.await?;
-        Ok(())
-    }
-
-    async fn action_play(
-        &self,
-        guild_id: GuildId,
-        channel_id: ChannelId,
-        identifier: impl AsRef<str>,
-    ) -> Result<Track, anyhow::Error> {
-        // Join channel.
-        voice_channel::join(&self.shard, guild_id, channel_id).await?;
-
-        // Select player.
-        let player = self.lavalink.player(guild_id).await?;
-        let node_config = player.node().config();
-
-        // Load tracks.
-        let req = twilight_lavalink::http::load_track(
-            node_config.address,
-            identifier,
-            &node_config.authorization,
-        )?
-        .try_into()?;
-        let res = self.reqwest.execute(req).await?;
-        let loaded = res.json::<LoadedTracks>().await?;
-
-        // Determine the track.
-        let mut tracks = loaded.tracks.into_iter();
-        let track = tracks.next().ok_or_else(|| NoTracksFound)?;
-
-        // Issue play command.
-        player.send(Play::from((guild_id, &track.track)))?;
-
-        // Report success.
-        Ok(track)
-    }
-
-    async fn action_stop(&self, guild_id: GuildId) -> Result<(), anyhow::Error> {
-        // Issue stop command.
-        let player = self.lavalink.player(guild_id).await?;
-        player.send(Destroy::from(guild_id))?;
-
-        // Leave the voice channel.
-        voice_channel::leave(&self.shard, guild_id).await?;
-
-        // Report success.
-        Ok(())
-    }
-
-    async fn action_volume(&self, guild_id: GuildId, volume: i64) -> Result<i64, anyhow::Error> {
-        // Validate input bounds.
-        if 0 < volume || volume > 1000 {
-            return Err(VolumeValueOutOfBounds(volume).into());
+    let command = match args.next() {
+        Some(val) => val,
+        None => {
+            debug!(message = "skipping message without a command", ?msg);
+            return;
         }
+    };
 
-        // Issue volume command.
-        let player = self.lavalink.player(guild_id).await?;
-        player.send(Volume::from((guild_id, volume)))?;
-
-        // Report success.
-        Ok(volume)
-    }
-
-    async fn action_seek(
-        &self,
-        guild_id: GuildId,
-        position_in_millis: i64,
-    ) -> Result<i64, anyhow::Error> {
-        // Issue seek command.
-        let player = self.lavalink.player(guild_id).await?;
-        player.send(Seek::from((guild_id, position_in_millis)))?;
-
-        // Report success.
-        Ok(position_in_millis)
-    }
-
-    async fn action_pause_toggle(&self, guild_id: GuildId) -> Result<bool, anyhow::Error> {
-        // Prepare and issue pause toggle command.
-        let player = self.lavalink.player(guild_id).await?;
-        let was_paused = player.paused();
-        let should_be_paused = !was_paused;
-        player.send(Pause::from((guild_id, should_be_paused)))?;
-        Ok(should_be_paused)
+    let state = Arc::clone(state);
+    match command.as_ref() {
+        "!play" => spawn(async move {
+            let identifier = match args.next() {
+                Some(val) => val,
+                None => {
+                    respond_to(&state, msg.channel_id, "Pass track as an argument").await?;
+                    return Ok(());
+                }
+            };
+            let channel_id = match user_voice_channel(&state, guild_id, msg.author.id).await? {
+                Some(val) => val,
+                None => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        "You need to join a voice channel first",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            match action::play(&state, guild_id, channel_id, identifier).await {
+                Ok(track) => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        format!(
+                            "Playing **{:?}** by **{:?}**",
+                            track.info.title, track.info.author
+                        ),
+                    )
+                    .await?;
+                    Ok(())
+                }
+                Err(err) if err.is::<action::NoTracksFound>() => {
+                    respond_to(&state, msg.channel_id, "No tracks found").await?;
+                    Ok(())
+                }
+                Err(err) => Err(err)?,
+            }
+        }),
+        "!stop" => spawn(async move { action::stop(&state, guild_id).await }),
+        "!volume" => spawn(async move {
+            let value = match args.next() {
+                Some(val) => val,
+                None => {
+                    respond_to(&state, msg.channel_id, "Pass volume value as an argument").await?;
+                    return Ok(());
+                }
+            };
+            let value = match value.parse() {
+                Ok(value) => value,
+                Err(err) => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        format!("Volume value is invalid: {}", err),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            match action::volume(&state, guild_id, value).await {
+                Ok(val) => {
+                    respond_to(&state, msg.channel_id, format!("Volume was set to {}", val))
+                        .await?;
+                    Ok(())
+                }
+                Err(err) if err.is::<action::VolumeValueOutOfBounds>() => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        format!("Invalid volume value: {}", err),
+                    )
+                    .await?;
+                    Ok(())
+                }
+                Err(err) => Err(err)?,
+            }
+        }),
+        "!seek" => spawn(async move {
+            let value = match args.next() {
+                Some(val) => val,
+                None => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        "Pass seek position in milliseconds as an argument",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            let value = match value.parse() {
+                Ok(value) => value,
+                Err(err) => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        format!("Position is invalid: {}", err),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            match action::seek(&state, guild_id, value).await {
+                Ok(val) => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        format!("Position was set to {}ms", val),
+                    )
+                    .await?;
+                    Ok(())
+                }
+                Err(err) => Err(err)?,
+            }
+        }),
+        "!pause" => spawn(async move {
+            match action::pause_toggle(&state, guild_id).await {
+                Ok(val) => {
+                    respond_to(
+                        &state,
+                        msg.channel_id,
+                        if val { "Paused" } else { "Unpaused" },
+                    )
+                    .await?;
+                    Ok(())
+                }
+                Err(err) => Err(err)?,
+            }
+        }),
+        _ => {}
     }
 }
-
-#[derive(Debug, Error)]
-#[error("no tracks found")]
-struct NoTracksFound;
-
-#[derive(Debug, Error)]
-#[error("volume value is out of bounds: {0}")]
-struct VolumeValueOutOfBounds(i64);
