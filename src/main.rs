@@ -67,10 +67,7 @@ async fn main() -> Result<(), anyhow::Error> {
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
         state.cache.update(&event);
-
-        if let Event::MessageCreate(msg) = event {
-            process_message(&state, msg).await;
-        }
+        process_event(&state, event).await;
     }
 
     Ok(())
@@ -87,7 +84,12 @@ where
     });
 }
 
-async fn process_message(state: &Arc<State>, msg: Box<MessageCreate>) {
+async fn process_event(state: &Arc<State>, event: Event) {
+    let msg = match event {
+        Event::MessageCreate(msg) => msg,
+        _ => return,
+    };
+
     let msg: Message = msg.0;
 
     let guild_id = match msg.guild_id {
