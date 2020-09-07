@@ -2,15 +2,6 @@ use crate::State;
 use tracing::debug;
 use twilight_model::id::{ChannelId, GuildId, UserId};
 
-pub async fn respond_to(
-    state: &State,
-    to: ChannelId,
-    with: impl Into<String>,
-) -> Result<(), anyhow::Error> {
-    state.http.create_message(to).content(with)?.await?;
-    Ok(())
-}
-
 pub async fn user_voice_channel(
     state: &State,
     guild_id: GuildId,

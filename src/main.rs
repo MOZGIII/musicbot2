@@ -7,15 +7,17 @@ use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::Lavalink;
-use twilight_model::{channel::Message, gateway::payload::MessageCreate};
+use twilight_model::channel::Message;
 use twilight_standby::Standby;
 
 mod action;
 mod helper;
+mod response_context;
 mod state;
 mod voice_channel;
 
-use helper::{respond_to, user_voice_channel};
+use helper::user_voice_channel;
+use response_context::ResponseContext;
 use state::State;
 
 #[tokio::main]
@@ -67,7 +69,7 @@ async fn main() -> Result<(), anyhow::Error> {
         state.cache.update(&event);
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
-        process_event(&state, event).await;
+        process_event(&state, &event).await;
     }
 
     Ok(())
@@ -84,13 +86,13 @@ where
     });
 }
 
-async fn process_event(state: &Arc<State>, event: Event) {
+async fn process_event(state: &Arc<State>, event: &Event) {
     let msg = match event {
         Event::MessageCreate(msg) => msg,
         _ => return,
     };
 
-    let msg: Message = msg.0;
+    let msg: &Message = &msg.0;
 
     let guild_id = match msg.guild_id {
         Some(val) => val,
@@ -112,82 +114,80 @@ async fn process_event(state: &Arc<State>, event: Event) {
         }
     };
 
+    let response_context = ResponseContext::new(Arc::clone(state), &msg);
+
     let state = Arc::clone(state);
     match command.as_ref() {
-        "!play" => spawn(async move {
-            let identifier = match args.next() {
-                Some(val) => val,
-                None => {
-                    respond_to(&state, msg.channel_id, "Pass track as an argument").await?;
-                    return Ok(());
+        "!play" => {
+            let author_id = msg.author.id;
+            spawn(async move {
+                let identifier = match args.next() {
+                    Some(val) => val,
+                    None => {
+                        response_context
+                            .with_content("Pass track as an argument")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let channel_id = match user_voice_channel(&state, guild_id, author_id).await? {
+                    Some(val) => val,
+                    None => {
+                        response_context
+                            .with_content("You need to join a voice channel first")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                match action::play(&state, guild_id, channel_id, identifier).await {
+                    Ok(track) => {
+                        response_context
+                            .with_content(format!(
+                                "Playing **{:?}** by **{:?}**",
+                                track.info.title, track.info.author
+                            ))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) if err.is::<action::NoTracksFound>() => {
+                        response_context.with_content("No tracks found").await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
                 }
-            };
-            let channel_id = match user_voice_channel(&state, guild_id, msg.author.id).await? {
-                Some(val) => val,
-                None => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        "You need to join a voice channel first",
-                    )
-                    .await?;
-                    return Ok(());
-                }
-            };
-            match action::play(&state, guild_id, channel_id, identifier).await {
-                Ok(track) => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        format!(
-                            "Playing **{:?}** by **{:?}**",
-                            track.info.title, track.info.author
-                        ),
-                    )
-                    .await?;
-                    Ok(())
-                }
-                Err(err) if err.is::<action::NoTracksFound>() => {
-                    respond_to(&state, msg.channel_id, "No tracks found").await?;
-                    Ok(())
-                }
-                Err(err) => Err(err)?,
-            }
-        }),
+            })
+        }
         "!stop" => spawn(async move { action::stop(&state, guild_id).await }),
         "!volume" => spawn(async move {
             let value = match args.next() {
                 Some(val) => val,
                 None => {
-                    respond_to(&state, msg.channel_id, "Pass volume value as an argument").await?;
+                    response_context
+                        .with_content("Pass volume value as an argument")
+                        .await?;
                     return Ok(());
                 }
             };
             let value = match value.parse() {
                 Ok(value) => value,
                 Err(err) => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        format!("Volume value is invalid: {}", err),
-                    )
-                    .await?;
+                    response_context
+                        .with_content(format!("Volume value is invalid: {}", err))
+                        .await?;
                     return Ok(());
                 }
             };
             match action::volume(&state, guild_id, value).await {
                 Ok(val) => {
-                    respond_to(&state, msg.channel_id, format!("Volume was set to {}", val))
+                    response_context
+                        .with_content(format!("Volume was set to {}", val))
                         .await?;
                     Ok(())
                 }
                 Err(err) if err.is::<action::VolumeValueOutOfBounds>() => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        format!("Invalid volume value: {}", err),
-                    )
-                    .await?;
+                    response_context
+                        .with_content(format!("Invalid volume value: {}", err))
+                        .await?;
                     Ok(())
                 }
                 Err(err) => Err(err)?,
@@ -197,35 +197,26 @@ async fn process_event(state: &Arc<State>, event: Event) {
             let value = match args.next() {
                 Some(val) => val,
                 None => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        "Pass seek position in milliseconds as an argument",
-                    )
-                    .await?;
+                    response_context
+                        .with_content("Pass seek position in milliseconds as an argument")
+                        .await?;
                     return Ok(());
                 }
             };
             let value = match value.parse() {
                 Ok(value) => value,
                 Err(err) => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        format!("Position is invalid: {}", err),
-                    )
-                    .await?;
+                    response_context
+                        .with_content(format!("Position is invalid: {}", err))
+                        .await?;
                     return Ok(());
                 }
             };
             match action::seek(&state, guild_id, value).await {
                 Ok(val) => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        format!("Position was set to {}ms", val),
-                    )
-                    .await?;
+                    response_context
+                        .with_content(format!("Position was set to {}ms", val))
+                        .await?;
                     Ok(())
                 }
                 Err(err) => Err(err)?,
@@ -234,12 +225,9 @@ async fn process_event(state: &Arc<State>, event: Event) {
         "!pause" => spawn(async move {
             match action::pause_toggle(&state, guild_id).await {
                 Ok(val) => {
-                    respond_to(
-                        &state,
-                        msg.channel_id,
-                        if val { "Paused" } else { "Unpaused" },
-                    )
-                    .await?;
+                    response_context
+                        .with_content(if val { "Paused" } else { "Unpaused" })
+                        .await?;
                     Ok(())
                 }
                 Err(err) => Err(err)?,
