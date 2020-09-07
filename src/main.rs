@@ -64,9 +64,9 @@ async fn main() -> Result<(), anyhow::Error> {
     info!(message = "processing events");
 
     while let Some(event) = events.next().await {
+        state.cache.update(&event);
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
-        state.cache.update(&event);
         process_event(&state, event).await;
     }
 
