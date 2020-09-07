@@ -76,7 +76,7 @@ async fn main() -> Result<(), anyhow::Error> {
         state.lavalink.process(&event).await?;
 
         if let Event::MessageCreate(msg) = event {
-            state.process_message(msg).await?;
+            state.process_message(msg).await;
         }
     }
 
@@ -95,16 +95,15 @@ where
 }
 
 impl State {
-    async fn process_message(
-        self: &Arc<Self>,
-        msg: Box<MessageCreate>,
-    ) -> Result<(), anyhow::Error> {
+    async fn process_message(self: &Arc<Self>, msg: Box<MessageCreate>) {
         let msg: Message = msg.0;
 
-        let guild_id = if let Some(val) = msg.guild_id {
-            val
-        } else {
-            return Ok(());
+        let guild_id = match msg.guild_id {
+            Some(val) => val,
+            None => {
+                debug!(message = "skipping non-guild message", ?msg);
+                return;
+            }
         };
 
         let content = msg.content.to_owned();
@@ -113,7 +112,10 @@ impl State {
 
         let command = match args.next() {
             Some(val) => val,
-            None => return Ok(()),
+            None => {
+                debug!(message = "skipping message without a command", ?msg);
+                return;
+            }
         };
 
         let state = Arc::clone(&self);
@@ -238,8 +240,6 @@ impl State {
             }),
             _ => {}
         }
-
-        Ok(())
     }
 
     async fn user_voice_channel(
