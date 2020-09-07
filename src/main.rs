@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
 use std::{env, future::Future, net::ToSocketAddrs, sync::Arc};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
@@ -81,7 +81,7 @@ where
 {
     tokio::spawn(async move {
         if let Err(why) = fut.await {
-            debug!("handler error: {:?}", why);
+            warn!("handler error: {:?}", why);
         }
     });
 }
