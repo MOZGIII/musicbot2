@@ -696,6 +696,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "twilight-cache-inmemory",
  "twilight-gateway",
  "twilight-http",
  "twilight-lavalink",
@@ -1460,6 +1461,18 @@ dependencies = [
  "sha-1",
  "url",
  "utf-8",
+]
+
+[[package]]
+name = "twilight-cache-inmemory"
+version = "0.1.0"
+source = "git+https://github.com/twilight-rs/twilight?branch=trunk#ad30b2ff9990da565af0d880b5991c888c90b36b"
+dependencies = [
+ "bitflags",
+ "dashmap",
+ "serde",
+ "tracing",
+ "twilight-model",
 ]
 
 [[package]]

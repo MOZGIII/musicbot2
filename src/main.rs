@@ -4,6 +4,7 @@ use reqwest::Client as ReqwestClient;
 use std::{convert::TryInto, env, future::Future, net::ToSocketAddrs, sync::Arc};
 use thiserror::Error;
 use tracing::{debug, info};
+use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::{
@@ -27,6 +28,7 @@ struct State {
     reqwest: ReqwestClient,
     shard: Shard,
     standby: Standby,
+    cache: InMemoryCache,
 }
 
 #[tokio::main]
@@ -53,6 +55,8 @@ async fn main() -> Result<(), anyhow::Error> {
         let lavalink = Lavalink::new(user_id, shard_count);
         lavalink.add(lavalink_host, lavalink_auth).await?;
 
+        let cache = InMemoryCache::new();
+
         let mut shard = Shard::new(token);
         shard.start().await?;
 
@@ -62,6 +66,7 @@ async fn main() -> Result<(), anyhow::Error> {
             reqwest: ReqwestClient::new(),
             shard,
             standby: Standby::new(),
+            cache,
         }
     };
 
@@ -74,6 +79,7 @@ async fn main() -> Result<(), anyhow::Error> {
     while let Some(event) = events.next().await {
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
+        state.cache.update(&event);
 
         if let Event::MessageCreate(msg) = event {
             state.process_message(msg).await;
@@ -247,15 +253,32 @@ impl State {
         guild_id: GuildId,
         user_id: UserId,
     ) -> Result<Option<ChannelId>, anyhow::Error> {
-        let guild = self
-            .http
-            .guild(guild_id)
-            .await?
-            .with_context(|| "no guild")?;
-        Ok(guild
-            .voice_states
-            .get(&user_id)
-            .and_then(|voice_state| voice_state.channel_id))
+        let user_voice_state = self.cache.voice_state(user_id, guild_id);
+        let user_voice_state = match user_voice_state {
+            Some(val) => val,
+            None => {
+                debug!(message = "unable to find user voice state in cache");
+                return Ok(None);
+            }
+        };
+
+        debug!(message = "got user voice state", ?user_voice_state);
+
+        let channel_id = user_voice_state.channel_id;
+        let channel_id = match channel_id {
+            Some(val) => val,
+            None => {
+                debug!(message = "unable to find channel id in user voice state");
+                return Ok(None);
+            }
+        };
+
+        debug!(
+            message = "got channel id from user voice state",
+            ?channel_id
+        );
+
+        Ok(Some(channel_id))
     }
 
     async fn respond_to(
