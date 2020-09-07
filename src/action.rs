@@ -1,5 +1,5 @@
 use crate::{voice_channel, State};
-use std::convert::TryInto;
+use std::{convert::TryInto, ops::RangeInclusive};
 use thiserror::Error;
 use twilight_lavalink::{
     http::{LoadedTracks, Track},
@@ -53,10 +53,16 @@ pub async fn stop(state: &State, guild_id: GuildId) -> Result<(), anyhow::Error>
     Ok(())
 }
 
+const VOLUME_BOUNDS: RangeInclusive<i64> = 0..=1000;
+
 pub async fn volume(state: &State, guild_id: GuildId, volume: i64) -> Result<i64, anyhow::Error> {
     // Validate input bounds.
-    if 0 < volume || volume > 1000 {
-        return Err(VolumeValueOutOfBounds(volume).into());
+    if !VOLUME_BOUNDS.contains(&volume) {
+        return Err(VolumeValueOutOfBounds {
+            value: volume,
+            bounds: VOLUME_BOUNDS,
+        }
+        .into());
     }
 
     // Issue volume command.
@@ -94,5 +100,8 @@ pub async fn pause_toggle(state: &State, guild_id: GuildId) -> Result<bool, anyh
 pub struct NoTracksFound;
 
 #[derive(Debug, Error)]
-#[error("volume value is out of bounds: {0}")]
-pub struct VolumeValueOutOfBounds(i64);
+#[error("volume value is out of bounds: {value}, must be in {bounds:?}")]
+pub struct VolumeValueOutOfBounds {
+    value: i64,
+    bounds: RangeInclusive<i64>,
+}
