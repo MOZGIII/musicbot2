@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::StreamExt;
 use reqwest::Client as ReqwestClient;
 use std::{env, future::Future, net::ToSocketAddrs, sync::Arc};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
@@ -68,10 +68,12 @@ async fn main() -> Result<(), anyhow::Error> {
     info!(message = "processing events");
 
     while let Some(event) = events.next().await {
+        trace!(message = "start event handling", ?event);
         state.cache.update(&event);
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
         process_event(&state, &event);
+        trace!(message = "finish event handling", ?event);
     }
 
     Ok(())
