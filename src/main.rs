@@ -234,6 +234,10 @@ async fn process_event(state: &Arc<State>, event: &Event) {
                 Err(err) => Err(err)?,
             }
         }),
+        "!ping" => spawn(async move {
+            response_context.with_content("pong").await?;
+            Ok(())
+        }),
         _ => {}
     }
 }
