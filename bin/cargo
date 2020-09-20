@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null
+
+set -a
+[[ -f .env ]] && source .env
+[[ -f .env.local ]] && source .env.local
+set +a
+
+exec cargo "$@"
