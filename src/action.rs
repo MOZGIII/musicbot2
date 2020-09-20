@@ -35,7 +35,7 @@ pub async fn play(
     let track = tracks.next().ok_or_else(|| NoTracksFound)?;
 
     // Issue play command.
-    player.send(Play::from((guild_id, &track.track)))?;
+    player.send(Play::new(guild_id, &track.track, None, None, false))?;
 
     // Report success.
     Ok(track)
