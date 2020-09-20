@@ -71,7 +71,12 @@ async fn main() -> Result<(), anyhow::Error> {
         trace!(message = "start event handling", ?event);
         state.cache.update(&event);
         state.standby.process(&event);
-        state.lavalink.process(&event).await?;
+        let event2 = event.clone();
+        let state2 = Arc::clone(&state);
+        spawn(async move {
+            state2.lavalink.process(&event2).await?;
+            Ok(())
+        });
         process_event(&state, &event);
         trace!(message = "finish event handling", ?event);
     }
