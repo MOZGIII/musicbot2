@@ -5,7 +5,9 @@ use twilight_http::Client as HttpClient;
 use twilight_lavalink::Lavalink;
 use twilight_standby::Standby;
 
-#[derive(Clone, Debug)]
+use crate::per_guild_data::Store;
+
+#[derive(Debug)]
 pub struct State {
     pub http: HttpClient,
     pub lavalink: Lavalink,
@@ -14,4 +16,5 @@ pub struct State {
     pub standby: Standby,
     pub cache: InMemoryCache,
     pub command_prefix: String,
+    pub per_guild_data: Store,
 }

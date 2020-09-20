@@ -693,6 +693,7 @@ name = "musicbot2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dashmap",
  "futures",
  "reqwest",
  "serde_json",

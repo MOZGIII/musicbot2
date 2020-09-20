@@ -6,12 +6,14 @@ use tracing::{debug, info, trace, warn};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
-use twilight_lavalink::{model::IncomingEvent, Lavalink};
+use twilight_lavalink::{http::Track, model::IncomingEvent, Lavalink};
 use twilight_model::channel::Message;
 use twilight_standby::Standby;
 
 mod action;
 mod helper;
+mod per_guild_data;
+mod player;
 mod response_context;
 mod state;
 mod voice_channel;
@@ -49,6 +51,7 @@ async fn main() -> Result<(), anyhow::Error> {
             standby: Standby::new(),
             cache,
             command_prefix,
+            per_guild_data: Default::default(),
         }
     };
 
@@ -143,6 +146,9 @@ fn process_event(state: &Arc<State>, event: &Event) {
     info!(message = "got command", %command, args = ?args.as_slice());
 
     let response_context = ResponseContext::new(Arc::clone(state), &msg);
+    state
+        .per_guild_data
+        .associate_text_channel(guild_id, msg.channel_id);
 
     let state = Arc::clone(state);
     match command.as_ref() {
@@ -170,11 +176,43 @@ fn process_event(state: &Arc<State>, event: &Event) {
                 match action::play(&state, guild_id, channel_id, identifier).await {
                     Ok(track) => {
                         response_context
-                            .with_content(format!(
-                                "Playing **{}** by **{}**",
-                                track.info.title.unwrap_or_default(),
-                                track.info.author.unwrap_or_default()
-                            ))
+                            .with_content(format!("Playing {}", format_track(&track)))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(err) if err.is::<action::NoTracksFound>() => {
+                        response_context.with_content("No tracks found").await?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err)?,
+                }
+            })
+        }
+        "add" | "enqueue" => {
+            let author_id = msg.author.id;
+            spawn(async move {
+                let identifier = match args.next() {
+                    Some(val) => val,
+                    None => {
+                        response_context
+                            .with_content("Pass track as an argument")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let channel_id = match user_voice_channel(&state, guild_id, author_id).await? {
+                    Some(val) => val,
+                    None => {
+                        response_context
+                            .with_content("You need to join a voice channel first")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                match action::enqueue(&state, guild_id, channel_id, identifier).await {
+                    Ok(track) => {
+                        response_context
+                            .with_content(format!("Enqueued {}", format_track(&track)))
                             .await?;
                         Ok(())
                     }
@@ -270,6 +308,80 @@ fn process_event(state: &Arc<State>, event: &Event) {
     }
 }
 
-fn process_lavalink_event(_state: &Arc<State>, event: IncomingEvent) {
+fn process_lavalink_event(state: &Arc<State>, event: IncomingEvent) {
     trace!(message = "got lavalink event", ?event);
+
+    let state = Arc::clone(state);
+    match event {
+        IncomingEvent::TrackStart(track_start) => {
+            spawn(async move {
+                let guild_id = track_start.guild_id;
+
+                let per_guild_info =
+                    match state.per_guild_data.get_associated_text_channel(guild_id) {
+                        Some(val) => val,
+                        None => {
+                            warn!(
+                                message = "no per guild data at track start",
+                                %guild_id
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                let message = format!("Playing the track");
+
+                state
+                    .http
+                    .create_message(per_guild_info)
+                    .content(message)
+                    .unwrap()
+                    .await?;
+
+                Ok(())
+            });
+        }
+        IncomingEvent::TrackEnd(track_end) => {
+            spawn(async move {
+                let guild_id = track_end.guild_id;
+
+                let track = action::play_from_queue(&state, guild_id).await?;
+
+                let per_guild_info =
+                    match state.per_guild_data.get_associated_text_channel(guild_id) {
+                        Some(val) => val,
+                        None => {
+                            warn!(
+                                message = "no per guild data at track end",
+                                %guild_id
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                let message = match track {
+                    Some(track) => format!("Playing {} from queue", format_track(&track)),
+                    None => format!("Queue empty"),
+                };
+
+                state
+                    .http
+                    .create_message(per_guild_info)
+                    .content(message)
+                    .unwrap()
+                    .await?;
+
+                Ok(())
+            });
+        }
+        _ => {}
+    }
+}
+
+fn format_track(track: &Track) -> String {
+    format!(
+        "**{}** by **{}**",
+        track.info.title.as_deref().unwrap_or(""),
+        track.info.author.as_deref().unwrap_or(""),
+    )
 }

@@ -41,6 +41,69 @@ pub async fn play(
     Ok(track)
 }
 
+pub async fn enqueue(
+    state: &State,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    identifier: impl AsRef<str>,
+) -> Result<Track, anyhow::Error> {
+    // Join channel.
+    voice_channel::join(&state.shard, guild_id, channel_id).await?;
+
+    // Select player.
+    let player = state.lavalink.player(guild_id).await?;
+    let node_config = player.node().config();
+
+    // Load tracks.
+    let req = twilight_lavalink::http::load_track(
+        node_config.address,
+        identifier,
+        &node_config.authorization,
+    )?
+    .try_into()?;
+    let res = state.reqwest.execute(req).await?;
+    let loaded = res.json::<LoadedTracks>().await?;
+
+    // Determine the track.
+    let mut tracks = loaded.tracks.into_iter();
+    let track = tracks.next().ok_or_else(|| NoTracksFound)?;
+
+    // Enqueue track.
+    state
+        .per_guild_data
+        .with_track_manger(guild_id, |track_manager| {
+            track_manager.enqueue(std::iter::once(track.clone()));
+        });
+
+    // Report success.
+    Ok(track)
+}
+
+pub async fn play_from_queue(
+    state: &State,
+    guild_id: GuildId,
+) -> Result<Option<Track>, anyhow::Error> {
+    // Get the track from queue.
+    let track = state
+        .per_guild_data
+        .with_track_manger(guild_id, |track_manager| track_manager.next_track());
+
+    let track = match track {
+        Some(val) => val,
+        // No track is in queue.
+        None => return Ok(None),
+    };
+
+    // Select player.
+    let player = state.lavalink.player(guild_id).await?;
+
+    // Issue play command.
+    player.send(Play::new(guild_id, &track.track, None, None, false))?;
+
+    // Report success.
+    Ok(Some(track))
+}
+
 pub async fn stop(state: &State, guild_id: GuildId) -> Result<(), anyhow::Error> {
     // Issue stop command.
     let player = state.lavalink.player(guild_id).await?;
