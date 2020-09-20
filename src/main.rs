@@ -71,7 +71,7 @@ async fn main() -> Result<(), anyhow::Error> {
         state.cache.update(&event);
         state.standby.process(&event);
         state.lavalink.process(&event).await?;
-        process_event(&state, &event).await;
+        process_event(&state, &event);
     }
 
     Ok(())
@@ -88,7 +88,7 @@ where
     });
 }
 
-async fn process_event(state: &Arc<State>, event: &Event) {
+fn process_event(state: &Arc<State>, event: &Event) {
     let msg = match event {
         Event::MessageCreate(msg) => msg,
         _ => return,
