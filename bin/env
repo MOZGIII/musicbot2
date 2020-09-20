@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+
+set -a
+[[ -f "$DIR/.env" ]] && source "$DIR/.env"
+[[ -f "$DIR/.env.local" ]] && source "$DIR/.env.local"
+set +a
+
+exec "$@"
