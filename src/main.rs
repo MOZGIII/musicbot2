@@ -28,6 +28,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let state = {
         let token =
             env::var("DISCORD_TOKEN").with_context(|| "unable to obtain DISCORD_TOKEN env var")?;
+        let command_prefix = env::var("PREFIX").unwrap_or_else(|_| "!".to_owned());
         let lavalink_host = env::var("LAVALINK_HOST")
             .with_context(|| "unable to obtain LAVALINK_HOST env var")?
             .to_socket_addrs()
@@ -56,6 +57,7 @@ async fn main() -> Result<(), anyhow::Error> {
             shard,
             standby: Standby::new(),
             cache,
+            command_prefix,
         }
     };
 
@@ -102,7 +104,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
         }
     };
 
-    let command = match msg.content.strip_prefix("!") {
+    let command = match msg.content.strip_prefix(&state.command_prefix) {
         Some(val) => val,
         None => {
             debug!(message = "skipping non-command message", ?msg);

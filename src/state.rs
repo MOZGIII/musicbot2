@@ -13,4 +13,5 @@ pub struct State {
     pub shard: Shard,
     pub standby: Standby,
     pub cache: InMemoryCache,
+    pub command_prefix: String,
 }
