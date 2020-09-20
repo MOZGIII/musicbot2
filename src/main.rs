@@ -6,7 +6,7 @@ use tracing::{debug, info, trace, warn};
 use twilight_cache_inmemory::InMemoryCache;
 use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
-use twilight_lavalink::Lavalink;
+use twilight_lavalink::{model::IncomingEvent, Lavalink};
 use twilight_model::channel::Message;
 use twilight_standby::Standby;
 
@@ -29,21 +29,12 @@ async fn main() -> Result<(), anyhow::Error> {
         let token =
             env::var("DISCORD_TOKEN").with_context(|| "unable to obtain DISCORD_TOKEN env var")?;
         let command_prefix = env::var("PREFIX").unwrap_or_else(|_| "!".to_owned());
-        let lavalink_host = env::var("LAVALINK_HOST")
-            .with_context(|| "unable to obtain LAVALINK_HOST env var")?
-            .to_socket_addrs()
-            .with_context(|| "unable to parse lavalink host")?
-            .next()
-            .with_context(|| "unable to resolve lavalink host")?;
-        let lavalink_auth = env::var("LAVALINK_AUTHORIZATION")
-            .with_context(|| "unable to obtain LAVALINK_AUTHORIZATION env var")?;
         let shard_count = 1u64;
 
         let http = HttpClient::new(&token);
         let user_id = http.current_user().await?.id;
 
         let lavalink = Lavalink::new(user_id, shard_count);
-        lavalink.add(lavalink_host, lavalink_auth).await?;
 
         let cache = InMemoryCache::new();
 
@@ -62,6 +53,26 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     let state = Arc::new(state);
+
+    {
+        let lavalink_host = env::var("LAVALINK_HOST")
+            .with_context(|| "unable to obtain LAVALINK_HOST env var")?
+            .to_socket_addrs()
+            .with_context(|| "unable to parse lavalink host")?
+            .next()
+            .with_context(|| "unable to resolve lavalink host")?;
+        let lavalink_auth = env::var("LAVALINK_AUTHORIZATION")
+            .with_context(|| "unable to obtain LAVALINK_AUTHORIZATION env var")?;
+
+        let (_, mut lavalink_rx) = state.lavalink.add(lavalink_host, lavalink_auth).await?;
+
+        let state2 = Arc::clone(&state);
+        tokio::spawn(async move {
+            while let Some(event) = lavalink_rx.next().await {
+                process_lavalink_event(&state2, event);
+            }
+        });
+    }
 
     let mut events = state.shard.events();
 
@@ -256,4 +267,8 @@ fn process_event(state: &Arc<State>, event: &Event) {
         }),
         _ => {}
     }
+}
+
+fn process_lavalink_event(_state: &Arc<State>, event: IncomingEvent) {
+    trace!(message = "got lavalink event", ?event);
 }
