@@ -102,8 +102,15 @@ async fn process_event(state: &Arc<State>, event: &Event) {
         }
     };
 
-    let content = msg.content.to_owned();
-    let args: Vec<String> = content.split(' ').map(ToOwned::to_owned).collect();
+    let command = match msg.content.strip_prefix("!") {
+        Some(val) => val,
+        None => {
+            debug!(message = "skipping non-command message", ?msg);
+            return;
+        }
+    };
+
+    let args: Vec<String> = command.split(' ').map(ToOwned::to_owned).collect();
     let mut args = args.into_iter();
 
     let command = match args.next() {
@@ -119,7 +126,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
 
     let state = Arc::clone(state);
     match command.as_ref() {
-        "!play" => {
+        "play" => {
             let author_id = msg.author.id;
             spawn(async move {
                 let identifier = match args.next() {
@@ -158,8 +165,8 @@ async fn process_event(state: &Arc<State>, event: &Event) {
                 }
             })
         }
-        "!stop" => spawn(async move { action::stop(&state, guild_id).await }),
-        "!volume" => spawn(async move {
+        "stop" => spawn(async move { action::stop(&state, guild_id).await }),
+        "volume" => spawn(async move {
             let value = match args.next() {
                 Some(val) => val,
                 None => {
@@ -194,7 +201,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
                 Err(err) => Err(err)?,
             }
         }),
-        "!seek" => spawn(async move {
+        "seek" => spawn(async move {
             let value = match args.next() {
                 Some(val) => val,
                 None => {
@@ -223,7 +230,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
                 Err(err) => Err(err)?,
             }
         }),
-        "!pause" => spawn(async move {
+        "pause" => spawn(async move {
             match action::pause_toggle(&state, guild_id).await {
                 Ok(val) => {
                     response_context
@@ -234,7 +241,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
                 Err(err) => Err(err)?,
             }
         }),
-        "!ping" => spawn(async move {
+        "ping" => spawn(async move {
             response_context.with_content("pong").await?;
             Ok(())
         }),
