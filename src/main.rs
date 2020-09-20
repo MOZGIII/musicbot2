@@ -113,6 +113,7 @@ async fn process_event(state: &Arc<State>, event: &Event) {
             return;
         }
     };
+    info!(message = "got command", %command, args = ?args.as_slice());
 
     let response_context = ResponseContext::new(Arc::clone(state), &msg);
 
