@@ -1,0 +1,65 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null
+
+set -a
+[[ -f .env ]] && source .env
+[[ -f .env.local ]] && source .env.local
+set +a
+
+CONTAINER_NAME="${LAVALINK_CONTAINER_NAME:-"musicbot2-lavalink"}"
+CONTAINER_IMAGE="${LAVALINK_CONTAINER_IMAGE:-"fredboat/lavalink:master"}"
+INTERACTIVE="${LAVALINK_INTERACTIVE:-"false"}"
+
+up() {
+  local ARGS=()
+  if [[ "$INTERACTIVE" == "true" ]]; then
+    ARGS+=(-it)
+  elif [[ "$INTERACTIVE" == "false" ]]; then
+    ARGS+=(-d)
+  fi
+
+  docker run \
+    --rm \
+    -e SERVER_PORT="${LAVALINK_PORT:-"2223"}" \
+    -e SERVER_ADDRESS="${LAVALINK_ADDRESS:-"0.0.0.0"}" \
+    -e LAVALINK_SERVER_PASSWORD="${LAVALINK_SERVER_PASSWORD:-""}" \
+    --net=host \
+    -v "$(pwd)/lavalink/application.yml:/opt/Lavalink/application.yml" \
+    --name "$CONTAINER_NAME" \
+    "${ARGS[@]}" \
+    "$@" \
+    "$CONTAINER_IMAGE"
+}
+
+down() {
+  docker rm -f "$@" "$CONTAINER_NAME"
+}
+
+logs() {
+  docker logs "$@" "$CONTAINER_NAME"
+}
+
+usage() {
+  cat <<EOF
+Usage: $0 [up|down|logs]
+EOF
+}
+
+usage_and_exit() {
+  usage >&2
+  exit 1
+}
+
+MODE="${1?$(usage)}"
+shift
+
+case "$MODE" in
+"up" | "down" | "logs")
+  "$MODE" "$@"
+  ;;
+*)
+  usage_and_exit
+  ;;
+esac
