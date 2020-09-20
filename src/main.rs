@@ -171,8 +171,9 @@ fn process_event(state: &Arc<State>, event: &Event) {
                     Ok(track) => {
                         response_context
                             .with_content(format!(
-                                "Playing **{:?}** by **{:?}**",
-                                track.info.title, track.info.author
+                                "Playing **{}** by **{}**",
+                                track.info.title.unwrap_or_default(),
+                                track.info.author.unwrap_or_default()
                             ))
                             .await?;
                         Ok(())
