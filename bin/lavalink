@@ -12,6 +12,16 @@ CONTAINER_NAME="${LAVALINK_CONTAINER_NAME:-"musicbot2-lavalink"}"
 CONTAINER_IMAGE="${LAVALINK_CONTAINER_IMAGE:-"fredboat/lavalink:master"}"
 INTERACTIVE="${LAVALINK_INTERACTIVE:-"false"}"
 
+detect_container_runtime() {
+  if command -v podman &>/dev/null; then
+    echo "podman"
+  else
+    echo "docker"
+  fi
+}
+
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-"$(detect_container_runtime)"}"
+
 up() {
   local ARGS=()
   if [[ "$INTERACTIVE" == "true" ]]; then
@@ -20,7 +30,7 @@ up() {
     ARGS+=(-d)
   fi
 
-  docker run \
+  "$CONTAINER_RUNTIME" run \
     --rm \
     -e SERVER_PORT="${LAVALINK_PORT:-"2223"}" \
     -e SERVER_ADDRESS="${LAVALINK_ADDRESS:-"0.0.0.0"}" \
@@ -34,11 +44,11 @@ up() {
 }
 
 down() {
-  docker rm -f "$@" "$CONTAINER_NAME"
+  "$CONTAINER_RUNTIME" rm -f "$@" "$CONTAINER_NAME"
 }
 
 logs() {
-  docker logs "$@" "$CONTAINER_NAME"
+  "$CONTAINER_RUNTIME" logs "$@" "$CONTAINER_NAME"
 }
 
 usage() {
