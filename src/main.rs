@@ -4,7 +4,7 @@ use reqwest::Client as ReqwestClient;
 use std::{env, future::Future, net::ToSocketAddrs, sync::Arc};
 use tracing::{debug, info, trace, warn};
 use twilight_cache_inmemory::InMemoryCache;
-use twilight_gateway::{Event, Shard};
+use twilight_gateway::{Event, Intents, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_lavalink::{http::Track, model::IncomingEvent, Lavalink};
 use twilight_model::channel::Message;
@@ -27,32 +27,36 @@ async fn main() -> Result<(), anyhow::Error> {
     // Initialize the tracing subscriber.
     tracing_subscriber::fmt::init();
 
-    let state = {
+    let (state, mut events) = {
         let token =
             env::var("DISCORD_TOKEN").with_context(|| "unable to obtain DISCORD_TOKEN env var")?;
         let command_prefix = env::var("PREFIX").unwrap_or_else(|_| "!".to_owned());
         let shard_count = 1u64;
 
-        let http = HttpClient::new(&token);
-        let user_id = http.current_user().await?.id;
+        let http = HttpClient::new(token.clone());
+        let user_id = http.current_user().exec().await?.model().await?.id;
 
         let lavalink = Lavalink::new(user_id, shard_count);
 
         let cache = InMemoryCache::new();
 
-        let mut shard = Shard::new(token);
+        let (shard, events) =
+            Shard::new(token, Intents::GUILD_MESSAGES | Intents::GUILD_VOICE_STATES);
         shard.start().await?;
 
-        State {
-            http,
-            lavalink,
-            reqwest: ReqwestClient::new(),
-            shard,
-            standby: Standby::new(),
-            cache,
-            command_prefix,
-            per_guild_data: Default::default(),
-        }
+        (
+            State {
+                http,
+                lavalink,
+                reqwest: ReqwestClient::new(),
+                shard,
+                standby: Standby::new(),
+                cache,
+                command_prefix,
+                per_guild_data: Default::default(),
+            },
+            events,
+        )
     };
 
     let state = Arc::new(state);
@@ -76,8 +80,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         });
     }
-
-    let mut events = state.shard.events();
 
     info!(message = "processing events");
 
@@ -176,7 +178,7 @@ fn process_event(state: &Arc<State>, event: &Event) {
                 match action::play(&state, guild_id, channel_id, identifier).await {
                     Ok(track) => {
                         response_context
-                            .with_content(format!("Playing {}", format_track(&track)))
+                            .with_content(&format!("Playing {}", format_track(&track)))
                             .await?;
                         Ok(())
                     }
@@ -212,7 +214,7 @@ fn process_event(state: &Arc<State>, event: &Event) {
                 match action::enqueue(&state, guild_id, channel_id, identifier).await {
                     Ok(track) => {
                         response_context
-                            .with_content(format!("Enqueued {}", format_track(&track)))
+                            .with_content(&format!("Enqueued {}", format_track(&track)))
                             .await?;
                         Ok(())
                     }
@@ -239,7 +241,7 @@ fn process_event(state: &Arc<State>, event: &Event) {
                 Ok(value) => value,
                 Err(err) => {
                     response_context
-                        .with_content(format!("Volume value is invalid: {}", err))
+                        .with_content(&format!("Volume value is invalid: {}", err))
                         .await?;
                     return Ok(());
                 }
@@ -247,13 +249,13 @@ fn process_event(state: &Arc<State>, event: &Event) {
             match action::volume(&state, guild_id, value).await {
                 Ok(val) => {
                     response_context
-                        .with_content(format!("Volume was set to {}", val))
+                        .with_content(&format!("Volume was set to {}", val))
                         .await?;
                     Ok(())
                 }
                 Err(err) if err.is::<action::VolumeValueOutOfBounds>() => {
                     response_context
-                        .with_content(format!("Invalid volume value: {}", err))
+                        .with_content(&format!("Invalid volume value: {}", err))
                         .await?;
                     Ok(())
                 }
@@ -274,7 +276,7 @@ fn process_event(state: &Arc<State>, event: &Event) {
                 Ok(value) => value,
                 Err(err) => {
                     response_context
-                        .with_content(format!("Position is invalid: {}", err))
+                        .with_content(&format!("Position is invalid: {}", err))
                         .await?;
                     return Ok(());
                 }
@@ -282,7 +284,7 @@ fn process_event(state: &Arc<State>, event: &Event) {
             match action::seek(&state, guild_id, value).await {
                 Ok(val) => {
                     response_context
-                        .with_content(format!("Position was set to {}ms", val))
+                        .with_content(&format!("Position was set to {}ms", val))
                         .await?;
                     Ok(())
                 }
@@ -334,8 +336,9 @@ fn process_lavalink_event(state: &Arc<State>, event: IncomingEvent) {
                 state
                     .http
                     .create_message(per_guild_info)
-                    .content(message)
+                    .content(&message)
                     .unwrap()
+                    .exec()
                     .await?;
 
                 Ok(())
@@ -367,8 +370,9 @@ fn process_lavalink_event(state: &Arc<State>, event: IncomingEvent) {
                 state
                     .http
                     .create_message(per_guild_info)
-                    .content(message)
+                    .content(&message)
                     .unwrap()
+                    .exec()
                     .await?;
 
                 Ok(())

@@ -1,5 +1,8 @@
 use twilight_gateway::{shard::CommandError, Shard};
-use twilight_model::id::{ChannelId, GuildId};
+use twilight_model::{
+    gateway::payload::outgoing::UpdateVoiceState,
+    id::{ChannelId, GuildId},
+};
 
 pub async fn join(
     shard: &Shard,
@@ -7,28 +10,17 @@ pub async fn join(
     channel_id: impl Into<ChannelId>,
 ) -> Result<(), CommandError> {
     shard
-        .command(&serde_json::json!({
-            "op": 4,
-            "d": {
-                "channel_id": channel_id.into(),
-                "guild_id": guild_id.into(),
-                "self_mute": false,
-                "self_deaf": false,
-            }
-        }))
+        .command(&UpdateVoiceState::new(
+            guild_id,
+            Some(channel_id.into()),
+            false,
+            false,
+        ))
         .await
 }
 
 pub async fn leave(shard: &Shard, guild_id: impl Into<GuildId>) -> Result<(), CommandError> {
     shard
-        .command(&serde_json::json!({
-            "op": 4,
-                "d": {
-                    "channel_id": None::<ChannelId>,
-                    "guild_id": guild_id.into(),
-                    "self_mute": false,
-                    "self_deaf": false,
-                }
-        }))
+        .command(&UpdateVoiceState::new(guild_id, None, false, false))
         .await
 }
