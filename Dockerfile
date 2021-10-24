@@ -1,6 +1,6 @@
 FROM debian:sid-slim AS builder
 
-ARG CLANG_VERSION=11
+ARG CLANG_VERSION=13
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -52,8 +52,8 @@ FROM debian:sid-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   ca-certificates \
-  libcrypto++6 \
-  libssl1.1 \
+  libssl-dev \
+  libcrypto++-dev \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/musicbot2 /usr/local/bin/musicbot2
