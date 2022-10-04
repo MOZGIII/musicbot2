@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3.1.0
       - name: Cache cargo
         uses: actions/cache@v2
         with:
@@ -48,7 +48,7 @@ jobs:
       - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u mozgiii --password-stdin
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3.1.0
       - name: Pull docker image (to reuse cache)
         run: docker pull "$IMAGE_NAME:latest"
         continue-on-error: true
